@@ -1,0 +1,467 @@
+library(gcplyr)
+library(plyr)
+library(readxl)
+library(tidyverse)
+library(writexl)
+library(ggplot2)
+library(ggrepel)
+library(pheatmap)
+library(grid)
+library(gridExtra)
+library(cowplot)
+library(ggplotify)
+
+# --- Select media  ---
+selected_media <- c("Putrescine")
+
+# --- Load and filter the correct sheets ---
+results_df <- read_excel("KO_Ttest_Insights_with_Top20.xlsx", sheet = "All_T_tests") %>%
+  mutate(p_value = as.numeric(p_value),
+         adj_p_value = as.numeric(adj_p_value)) %>%
+  filter(Media %in% selected_media)
+
+Top20_per_Media <- read_excel("KO_Ttest_Insights_with_Top20.xlsx", sheet = "Top20_per_Media") %>%
+  filter(Media %in% selected_media)
+
+# new path
+output_path <- "Figures_thesis/KEGG"
+dir.create(output_path, showWarnings = FALSE)
+
+# Volcano with top20 + highlight KOs
+highlight_kos <- c("ko:K12256", "ko:K02052", "ko:K09471") 
+
+for (media_name in selected_media) {
+  volcano_data <- results_df %>%
+    filter(Media == media_name) %>%
+    mutate(neglog10_p = -log10(p_value),
+           significance = ifelse(adj_p_value < 0.05 & abs(effect_size) >= 0.5, "Significant", "NS"))
+  
+  # Top 20 KOs for this medium
+  top20_kos <- volcano_data %>%
+    arrange(adj_p_value) %>%
+    slice_head(n = 20) %>%
+    pull(KO)
+  
+  # Add label + color flag
+  volcano_data <- volcano_data %>%
+    mutate(
+      KO_label = ifelse(KO %in% c(top20_kos, highlight_kos), KO, NA),
+      color_flag = case_when(
+        KO %in% highlight_kos ~ "Related to pathway",
+        KO %in% top20_kos ~ "Top20 most significant",
+        TRUE ~ "Other"
+      )
+    )
+  
+  # Plot volcano
+  p_volcano <- ggplot(volcano_data, aes(x = effect_size, y = neglog10_p, color = color_flag)) +
+    geom_point(alpha = 0.7) +
+    geom_text_repel(aes(label = KO_label), size = 7, max.overlaps = Inf, box.padding = 0.3) +
+    scale_color_manual(values = c("Related to pathway" = "red",
+                                  "Top20 most significant" = "blue",
+                                  "Other" = "grey")) +
+    labs(
+      title = paste(""),
+      x = "Effect size (Growth - No Growth)",
+      y = "-log10(p-value)",
+      color = "KO Category"
+    ) +
+    theme_minimal()
+  
+  # Save plot
+  ggsave(
+    filename = file.path(output_path, paste0("Volcano_", gsub(" ", "_", media_name), ".png")),
+    plot = p_volcano, width = 8, height = 6, dpi = 300, bg = "white"
+  )
+}
+
+print(p_volcano)
+
+
+# --- Barplots top 20 KO's ---
+# Barplots top 20 KO's with highlight
+highlight_kos <- c("ko:K12256", "ko:K02052", "ko:K09471") 
+
+for (media_name in selected_media) {
+  top20_data <- Top20_per_Media %>%
+    filter(Media == media_name) %>%
+    left_join(results_df, by = c("Media", "KO")) %>%
+    mutate(adj_p_value.y = ifelse(adj_p_value.y == 0, 1e-300, adj_p_value.y)) 
+  
+  if (nrow(top20_data) == 0) next
+  
+  # Add color_flag: Highlight vs Normal
+  top20_data <- top20_data %>%
+    mutate(color_flag = ifelse(KO %in% highlight_kos, "Related to pathway", "Not related to pathway"))
+  
+  # Plot
+  p_bar <- ggplot(top20_data, aes(x = reorder(KO, -log10(adj_p_value.y)), y = -log10(adj_p_value.y), fill = color_flag)) +
+    geom_col() +
+    scale_fill_manual(values = c("Related to pathway" = "red", "Not related to pathway" = "steelblue")) +
+    labs(
+      title = paste(""),
+      x = "KEGG Ortholog",
+      y = "-log10(adjusted p-value)",
+      fill = "KO Category"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+      axis.text.y = element_text(size = 12)
+    )
+  
+  # Save plot
+  ggsave(
+    filename = file.path(output_path, paste0("Barplots_Top20_", gsub(" ", "_", media_name), ".png")),
+    plot = p_bar, width = 10, height = 6, dpi = 300, bg = "white"
+  )
+}
+
+print(p_bar)
+
+#---- Heatmap of genes ----
+
+# --- Choose medium and KO's of interest ---
+selected_medium <- "Putrescine"
+selected_kos <- c("ko:K12256", "ko:K02052", "ko:K09471")
+
+# --- Define files and days ---
+days <- c(24, 48, 72, 96, 168, 216, 384)
+files <- paste0("BigExperiment_T", 1:7, "_", selected_medium, ".csv")
+
+# --- Read and combine all growth data ---
+growth_data <- map2_dfr(files, days, ~ {
+  read_csv(.x) %>%
+    mutate(day = .y) %>%
+    pivot_longer(cols = -day, names_to = "Well", values_to = "value")
+})
+
+# --- Load design ---
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"), 
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+# --- Annotate growth ---
+growth_annotated <- growth_data %>%
+  left_join(design, by = "Well") %>%
+  drop_na(Strains)
+
+strain_growth <- growth_annotated %>%
+  group_by(Strains) %>%
+  summarise(max_OD = max(value, na.rm = TRUE)) %>%
+  mutate(growth = case_when(
+    max_OD >= 0.1 ~ "Growth",
+    max_OD < 0.1 ~ "No growth",
+    TRUE ~ "Unknown"  # vangt rare gevallen af
+  ))
+
+# --- Load KO matrix ---
+ko_matrix <- read_excel("KO_matrix.xlsx")
+
+# --- Join KO matrix with growth status ---
+merged <- strain_growth %>%
+  left_join(ko_matrix, by = "Strains") %>%
+  select(Strains, growth, all_of(selected_kos)) %>%
+  mutate(across(all_of(selected_kos), ~ ifelse(. > 0, 1, 0)))
+
+# --- Filter out specific strains ---
+excluded_strains <- c("empty1", "empty2", "empty")  # <== jouw strains die je wil weghalen
+
+merged <- merged %>%
+  filter(!Strains %in% excluded_strains)
+
+# --- Arrange rows by growth status for visual separation ---
+merged <- merged %>%
+  arrange(desc(growth == "Growth"), desc(growth == "No growth"), desc(growth == "Unknown"))
+
+# --- Prepare matrix for heatmap (fix: use column_to_rownames!) ---
+heatmap_matrix <- merged %>%
+  select(Strains, all_of(selected_kos)) %>%
+  column_to_rownames("Strains") %>%
+  as.matrix()
+
+# --- Create annotation for row side ---
+
+growth_factor <- droplevels(factor(merged$growth, levels = c("Growth", "No growth", "Unknown")))
+names(growth_factor) <- merged$Strains
+
+# Stop in dataframe for pheatmap
+row_anno <- data.frame(growth = growth_factor)
+rownames(row_anno) <- names(growth_factor)
+
+# Dynamic build annotation_colors for presence levels
+present_levels <- levels(growth_factor)
+
+annotation_colors <- list()
+annotation_colors[["growth"]] <- c(
+  "Growth" = "darkgreen",
+  "No growth" = "darkred",
+  "Unknown" = "grey"
+)[present_levels]
+
+# Debug print om te checken
+cat("Present annotation levels:\n")
+print(present_levels)
+cat("Annotation colors used:\n")
+print(annotation_colors)
+cat("Rownames heatmap_matrix:\n")
+print(rownames(heatmap_matrix))
+cat("Rownames row_anno:\n")
+print(rownames(row_anno))
+
+# Custom function to draw column names centered at 0 degrees
+draw_colnames_centered <- function(coln, gaps, ...) {
+  coord = pheatmap:::find_coordinates(length(coln), gaps)
+  x = coord$coord - 0.5 * coord$size
+  grid::grid.text(coln,
+                  x = x,
+                  y = unit(1, "npc") - unit(18, "bigpts"),  # was 10, now 18
+                  just = "center",
+                  rot = 0,
+                  gp = grid::gpar(...))
+}
+
+# Assign it inside the pheatmap namespace
+assignInNamespace("draw_colnames", draw_colnames_centered, ns = "pheatmap")
+
+# --- Now plot pheatmap (now it will use your draw_colnames_0_degrees) ---
+p_heatmap <- pheatmap::pheatmap(
+  mat = heatmap_matrix,
+  color = c("grey", "steelblue"),
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  annotation_row = row_anno,
+  annotation_colors = annotation_colors,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  legend_breaks = c(0, 1),
+  legend_labels = c("Absent", "Present"),
+  fontsize_row = 8,
+  fontsize_col = 44,
+  fontsize = 30,
+  main = paste0(""),
+  filename = paste0("Figures_thesis/Pheatmap_Growth_vs_NoGrowth_", gsub(" ", "_", selected_medium), ".png"),
+  width = 30,
+  height = 38,
+  cellwidth = 450,
+  cellheight = 5
+)
+
+# Save as PNG using base R
+png("Figures_thesis/pheatmap_saved_direct.png", width = 1600, height = 1000, res = 150)
+grid::grid.draw(p_heatmap)
+dev.off()
+
+# ------- Prepare data for Barplot per Order standalone -------
+
+# --- Define medium and KO's again (for standalone run) ---
+selected_medium <- "Putrescine"   
+selected_kos <- c("ko:K12256", "ko:K02052", "ko:K09471")
+
+# --- Load design again ---
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"), 
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+# --- Define files and days ---
+days <- c(24, 48, 72, 96, 168, 216, 384)
+files <- paste0("BigExperiment_T", 1:7, "_", selected_medium, ".csv")
+
+# --- Read and combine growth data ---
+growth_data <- map2_dfr(files, days, ~ {
+  read_csv(.x) %>%
+    mutate(day = .y) %>%
+    pivot_longer(cols = -day, names_to = "Well", values_to = "value")
+})
+
+# --- Annotate growth ---
+growth_annotated <- growth_data %>%
+  left_join(design, by = "Well") %>%
+  drop_na(Strains)
+
+strain_growth <- growth_annotated %>%
+  group_by(Strains) %>%
+  summarise(max_OD = max(value, na.rm = TRUE)) %>%
+  mutate(growth = case_when(
+    max_OD >= 0.1 ~ "Growth",
+    max_OD < 0.1 ~ "No growth",
+    TRUE ~ "Unknown"
+  ))
+
+# --- Load KO matrix ---
+ko_matrix <- read_excel("KO_matrix.xlsx")
+
+# --- Join KO matrix with growth status ---
+merged <- strain_growth %>%
+  left_join(ko_matrix, by = "Strains") %>%
+  select(Strains, growth, all_of(selected_kos)) %>%
+  mutate(across(all_of(selected_kos), ~ ifelse(. > 0, 1, 0)))
+
+# --- Add Order info to merged ---
+merged_with_order <- merged %>%
+  left_join(design %>% select(Strains, Order) %>% distinct(), by = "Strains") %>%
+  drop_na(Order)
+
+# --- Optional filtering ---
+merged_with_order <- merged_with_order %>%
+  filter(!Order %in% c("N/A", "Bacillales", "Cytophagales", "Granulosicoccales", "Staphylococcales", "Verrucomicrobiales"))
+
+# --- Calculate total number of strains per Order ---
+order_totals <- merged_with_order %>%
+  group_by(Order) %>%
+  summarise(Total_Strains = n()) %>%
+  ungroup()
+
+# --- Calculate presence count per Order per KO ---
+order_ko_counts <- merged_with_order %>%
+  group_by(Order) %>%
+  summarise(across(all_of(selected_kos), ~ sum(. == 1, na.rm = TRUE))) %>%
+  ungroup()
+
+# --- Prepare long dataframe for barplot (with % calculation) ---
+order_ko_counts_long <- order_ko_counts %>%
+  pivot_longer(
+    cols = all_of(selected_kos),
+    names_to = "KO",
+    values_to = "Count"
+  ) %>%
+  # Join total strains per Order
+  left_join(order_totals, by = "Order") %>%
+  # Calculate % of strains with KO present
+  mutate(Percent = 100 * Count / Total_Strains)
+
+# --- Plot barplot per KO per Order (y = % of strains) ---
+p_bar_order_percent <- ggplot(order_ko_counts_long, aes(x = Order, y = Percent, fill = Order)) +
+  geom_col() +
+  facet_wrap(~ KO, scales = "free_y") +
+  labs(
+    title = paste0(""),
+    x = "Order",
+    y = "% of strains with KO",
+    fill = "Order"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 16)
+  )
+
+
+# Save plot
+ggsave(
+  filename = paste0("Figures_thesis/Barplot_Order_Counts_Percent_", gsub(" ", "_", selected_medium), ".png"),
+  plot = p_bar_order_percent, width = 16, height = 10, dpi = 300, bg = "white"
+)
+
+# Show plot
+print(p_bar_order_percent)
+
+
+#--------- Total growth on the medium --
+
+strain_growth_with_order <- strain_growth %>%
+  left_join(design %>% select(Strains, Order) %>% distinct(), by = "Strains") %>%
+  drop_na(Order) %>%
+  filter(!Order %in% c("N/A", "Bacillales", "Cytophagales", "Granulosicoccales", "Staphylococcales", "Verrucomicrobiales"))
+
+# --- Calculate number of growing strains per Order ---
+growth_summary <- strain_growth_with_order %>%
+  group_by(Order) %>%
+  summarise(
+    Total_Strains = n(),
+    N_Growth = sum(growth == "Growth"),
+    N_NoGrowth = sum(growth == "No growth")
+  ) %>%
+  mutate(Percent_Growth = 100 * N_Growth / Total_Strains)
+
+
+# --- Show table ---
+print(growth_summary)
+
+# Optionally save as Excel
+write_xlsx(growth_summary, paste0("Figures_thesis/Table_Growth_per_Order_", gsub(" ", "_", selected_medium), ".xlsx"))
+
+# --- Add Order to strain_growth ---
+strain_growth_with_order <- strain_growth %>%
+  left_join(design %>% select(Strains, Order) %>% distinct(), by = "Strains") %>%
+  drop_na(Order) %>%
+  filter(!Order %in% c("N/A", "Bacillales", "Cytophagales", "Granulosicoccales", "Staphylococcales", "Verrucomicrobiales"))
+
+# --- Plot boxplot + jitter ---
+p_box_jitter <- ggplot(strain_growth_with_order, aes(x = Order, y = max_OD, color = Order)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.5) +
+  geom_jitter(width = 0.2, height = 0, size = 2) +
+  labs(
+    title = paste0(""),
+    x = "Order",
+    y = "Maximum OD600",
+    color = "Order"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold")
+  ) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.1))
+
+# Save plot
+ggsave(
+  filename = paste0("Figures_thesis/Boxplot_Jitter_Growth_per_Order_", gsub(" ", "_", selected_medium), ".png"),
+  plot = p_box_jitter, width = 16, height = 10, dpi = 300, bg = "white"
+)
+
+# Show plot
+print(p_box_jitter)
+
+
+
+# Set up a theme for all plots
+common_theme <- theme_minimal(base_size = 24) +
+  theme(
+    axis.title = element_text(size = 28),
+    axis.text = element_text(size = 24),
+    legend.text = element_text(size = 26),
+    legend.title = element_text(size = 28),
+    plot.tag = element_text(size = 40, face = "bold")
+  )
+
+# Apply theme
+p_bar <- p_bar + common_theme +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p_box_jitter <- p_box_jitter + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p_bar_order_percent <- p_bar_order_percent + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Force tag on empty panel B ---
+p_empty_B <- ggplot() + theme_void() + labs(title = NULL) +
+  theme(plot.tag = element_text(size = 40, face = "bold")) +
+  ggtitle(NULL)
+
+# Layout grid (2x2)
+layout_design <- "
+AB
+CD
+"
+
+# Combine and assign plot tags via tag_levels
+combined_plot <- (
+  p_bar + p_empty_B + p_box_jitter + p_bar_order_percent
+) +
+  plot_layout(design = layout_design) +
+  plot_annotation(tag_levels = 'A')
+
+# Save
+ggsave("Figures_thesis/Figure_CombinedPutrescine_volcano_heatmap_jitter_bar1.png",
+       combined_plot, width = 42, height = 27, dpi = 300, bg = "white")
+
+# View
+print(combined_plot)
+
+
+
+
