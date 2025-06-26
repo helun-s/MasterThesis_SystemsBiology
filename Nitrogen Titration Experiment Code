@@ -1,0 +1,123 @@
+library (gcplyr)
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(patchwork)
+
+# --- Import growth curve data ---
+data <- "GROWTHCURVE titrate 1.csv"
+growthdata <- read.table(data, header = TRUE, sep = ',', stringsAsFactors = FALSE, dec = '.')
+
+print(head(growthdata$time, 10))
+
+# Remove "Raw Data (600) 3 - 1 h 25 min" from the raw data
+extract_time <- function(x) {
+  hours <- as.numeric(stringr::str_extract(x, "\\d+(?= h)"))
+  minutes <- as.numeric(stringr::str_extract(x, "\\d+(?= min)"))
+  minutes[is.na(minutes)] <- 0  
+  return(hours + minutes / 60)
+}
+
+growthdata$time <- extract_time(growthdata$time)
+
+print(head(growthdata$time, 10))
+
+# Transform to tidy format
+growthdata_tidy <- trans_wide_to_tidy(wides = growthdata, id_cols = c("time"))
+
+# Ensure Well is character
+growthdata_tidy$Well <- as.character(growthdata_tidy$Well)
+
+# --- Import plate design ---
+design <- import_blockdesigns(
+  files = c("1102205_design - kopie.csv"),
+  block_names = c("Strains", "Media", "Replicate"),
+  startrow = c(1, 11, 21),
+  endrow = c(9, 19, 29)
+)
+
+# Ensure Well is character
+design$Well <- as.character(design$Well)
+
+# Merge design with tidy data
+growthdata_tidy <- merge_dfs(growthdata_tidy, design)
+
+# Reorder wells for plotting (optional)
+growthdata_tidy$Well <- factor(
+  growthdata_tidy$Well,
+  levels = paste0(rep(LETTERS[1:8], each = 12), 1:12)
+)
+
+# Remove NAs
+growthdata_tidy <- na.omit(growthdata_tidy)
+
+# Filter only the wanted strains
+growthdata_tidy <- growthdata_tidy %>%
+  filter(Strains %in% c("1A01", "4F10", "B3M02"))
+
+# --- Plot All ---
+p_growth <- ggplot(data = growthdata_tidy, aes(x = time, y = Measurements, color = Media, shape = Replicate)) + 
+  geom_line() +
+  facet_wrap(~Strains, nrow = 1, ncol = 11) +
+  scale_color_manual(
+    name = "Concentration NH4Cl (mM)",
+    values = c("0" = "red", "1.25" = "blue", "2.5" = "green", "5" = "purple", "10" = "yellow", "20" = "black"),
+    limits = c("20", "10", "5", "2.5", "1.25", "0")
+  ) +
+  scale_shape_discrete(name = "Replicate") +
+  scale_x_continuous(limits = c(0, 50)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  labs(y = "OD600", x = "Time (h)", title = "")
+
+print(p_growth)
+
+# --- Summary: max OD per strain per concentration ---
+max_OD <- growthdata_tidy %>%
+  group_by(Strains, Media, Well) %>%
+  summarise(max_OD = max(Measurements, na.rm = TRUE)) %>%
+  ungroup()
+
+# Filter only for wanted strains
+filtered_max_OD <- max_OD %>%
+  filter(Strains %in% c("1A01", "4F10", "B3M02"))
+
+# Average and standardeviation per strain en concentration
+plot_data <- filtered_max_OD %>%
+  group_by(Strains, Media) %>%
+  summarise(mean_max_OD = mean(max_OD), sd_max_OD = sd(max_OD), .groups = "drop")
+
+# set Media (concentrations) in the right order
+plot_data$Media <- factor(plot_data$Media, levels = c("0", "1.25", "2.5", "5", "10", "20"))
+
+# --- Make line plot ---
+p_line <- ggplot(plot_data, aes(x = Media, y = mean_max_OD, group = Strains, color = Strains)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_max_OD - sd_max_OD, ymax = mean_max_OD + sd_max_OD), width = 0.2) +
+  labs(title = "", x = "Concentration (mM)", y = "Maximum OD600") +
+  theme_minimal()
+
+#---Combine figures ---------
+
+common_theme <- theme_minimal(base_size = 24) +
+  theme(
+    axis.title = element_text(size = 28),
+    axis.text = element_text(size = 24),
+    legend.text = element_text(size = 26),
+    legend.title = element_text(size = 28),
+    plot.tag = element_text(size = 40, face = "bold")
+  )
+
+# Apply to both plots
+p_growth <- p_growth + common_theme
+p_line <- p_line + common_theme
+
+# Combine
+combined_plot <- p_growth + p_line +
+  plot_layout(ncol = 1, widths = c(1, 1)) +
+  plot_annotation(tag_levels = "A")
+
+ggsave("Figures_thesis/Figure_NitrogenTitration.png", combined_plot, width = 25, height = 22, dpi = 300, bg = "white")
