@@ -1,0 +1,49 @@
+# Load libraries
+library(ggplot2)
+library(dplyr)
+
+# Manually define your values
+Strain <- c("1A01", "1A01", "1A01", "1A01", "1A01", "1A01", "1A01", "1A01",
+            "4H09", "4H09", "4H09", "4H09", "4H09", "4H09", "4H09", "4H09",
+            "A2R16", "A2R16", "A2R16", "A2R16", "A2R16", "A2R16", "A2R16", "A2R16")
+
+Nitrogen <- c("With nitrogen", "With nitrogen", "With nitrogen", "With nitrogen",
+              "Without nitrogen", "Without nitrogen", "Without nitrogen", "Without nitrogen",
+              "With nitrogen", "With nitrogen", "With nitrogen", "With nitrogen",
+              "Without nitrogen", "Without nitrogen", "Without nitrogen", "Without nitrogen",
+              "With nitrogen", "With nitrogen", "With nitrogen", "With nitrogen",
+              "Without nitrogen", "Without nitrogen", "Without nitrogen", "Without nitrogen")
+
+Concentration <- c("20", "40", "80", "120", "20", "40", "80", "120",
+                   "20", "40", "80", "120", "20", "40", "80", "120",
+                   "20", "40", "80", "120", "20", "40", "80", "120")
+
+OD600 <- c(0.6246, 0.6160, 0.6237, 0.2429, 0.0487, 0.0491, 0.6033, 0.3712,
+           0.521, 0.3963, 0.4334, 0.4043, 0.1865, 0.0842, 0.18214, 0.1866,
+           0.5226, 0.5433, 0.5181, 0.5160, 0.0266, 0.0144, 0.0163, 0.0233)
+
+# Create the data frame
+df <- data.frame(Strain, Nitrogen, Concentration, OD600)
+
+# Make sure Concentration is treated as a factor so it's ordered nicely on x-axis
+df$Concentration <- factor(df$Concentration, levels = c("20", "40", "80", "120"))
+
+# Filter only "With nitrogen" rows
+df_with_nitrogen <- df %>% filter(Nitrogen == "Without nitrogen")
+
+# Heatmap for only "With nitrogen"
+p_heatmap_without_nitrogen <- ggplot(df_with_nitrogen, aes(x = Concentration, y = Strain, fill = OD600)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "darkblue") +
+  labs(fill = "OD600", x = "Pre-culture nitrogen concentration (µM)", y = "Strain") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 30),
+    axis.text.y = element_text(size = 30),
+    axis.title.x = element_text(size = 32),
+    axis.title.y = element_text(size = 32),
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 25)
+  )
+
+print(p_heatmap_without_nitrogen)
