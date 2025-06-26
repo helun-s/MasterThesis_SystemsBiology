@@ -1,0 +1,96 @@
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library('growthcurver')
+library(purrr)
+library(scales)
+library(patchwork)
+
+
+# Define strains (repeat each strain twice)
+Strain <- rep(c("1A01","4F10","4H09","A2R16", "B3M02"), each = 4) # Each strain has 4 replicates
+Pre_culture_days <- rep(c(1, 1, 2, 2), times = 5) # Two measurements for each day per strain
+
+# OD600 values (match correct order with strains and pre-culture days)
+OD600_10 <- c(0.0716, 0.0784, 0.1218, 0.1061, # 1A01 (Day 1 & 2)
+              0.3729, 0.3749, 0.2349, 0.2435, # 4F10
+              0.3006, 0.2975, 0.5182, 0.5910, # 4H09
+              0.0505, 0.0484, 0.0282, 0.0319, # A2R16
+              0.1363, 0.1328, 0.1530, 0.1557) # B3M02
+
+# OD600 values (match correct order with strains and pre-culture days)
+OD600_100 <- c(0.0099, 0.0112, 0.0141, 0.0128, # 1A01 (Day 1 & 2)
+               0.0549, 0.0539, 0.0328, 0.0320, # 4F10
+               0.0595, 0.0628, 0.0779, 0.0666, # 4H09
+               0.0069, 0.0050, 0.0060, 0.0043, # A2R16
+               0.0122, 0.0129, 0.0110, 0.0119) # B3M02
+
+
+# Create individual data frames with a new Dilution column
+df_10x <- data.frame(Strain, Pre_culture_days, OD600 = OD600_10, Dilution = "First cycle")
+df_100x <- data.frame(Strain, Pre_culture_days, OD600 = OD600_100, Dilution = "Second cycle")
+
+# Combine into one dataframe
+growth.df <- rbind(df_10x, df_100x)
+
+# Ensure Pre_culture_days is a factor
+growth.df$Pre_culture_days <- as.factor(growth.df$Pre_culture_days)
+
+growth_summary <- growth.df %>%
+  group_by(Dilution, Strain, Pre_culture_days) %>%
+  summarise(
+    Mean_OD600 = mean(OD600),
+    SD = sd(OD600),
+    .groups = "drop"
+  )
+
+
+start_OD <- data.frame(
+  Strain = rep(c("1A01", "4F10", "4H09", "A2R16", "B3M02"), each = 2),
+  Pre_culture_days = rep(c("1", "2"), times = 5),
+  Start_OD600 = c(0.09560, 0.0758,
+                  0.03738, 0.06282,
+                  0.0727, 0.05807,
+                  0.03886, 0.03169,
+                  0.02685, 0.0277)
+) %>%
+  tidyr::expand_grid(Dilution = c("First cycle", "Second cycle"))  
+
+
+# Set dodge width
+dodge_width <- 0.9
+bar_width <- 0.8
+line_width <- 2  
+
+# Add group column for dodge alignment
+start_OD$Pre_culture_days <- factor(start_OD$Pre_culture_days)
+
+p_dilution <- ggplot(growth_summary, aes(x = Strain, y = Mean_OD600, fill = Pre_culture_days)) +
+  geom_bar(stat = "identity", position = position_dodge(width = dodge_width), width = bar_width) +
+  geom_errorbar(aes(ymin = Mean_OD600 - SD, ymax = Mean_OD600 + SD),
+                position = position_dodge(width = dodge_width), width = 0.2) +
+  geom_segment(data = start_OD,
+               aes(x = Strain, xend = Strain,
+                   y = Start_OD600, yend = Start_OD600,
+                   group = Pre_culture_days),
+               color = "black",
+               size = 1,
+               linetype = "dashed",
+               position = position_dodge(width = dodge_width),
+               show.legend = FALSE) +
+  facet_wrap(~ Dilution) +
+  labs(y = "OD600", x = "Strain", fill = "Pre-culture days") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 23),
+    axis.text.y = element_text(size = 23),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    legend.text = element_text(size = 23),
+    legend.title = element_text(size = 24),
+    strip.text = element_text(size = 24)
+  )
+
+
+print(p_dilution)
