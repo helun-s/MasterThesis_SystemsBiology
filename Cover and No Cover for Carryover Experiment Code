@@ -1,0 +1,139 @@
+library(gcplyr)
+library(tidyverse)
+library(readr)
+library(ggrepel)
+library(ggplot2)
+
+# Load data
+growthdata <- read_delim("Cover and no cover experiment.csv", delim = ",", col_types = cols())
+
+# Tidy the data
+growthdata_tidy <- trans_wide_to_tidy(wides = growthdata, id_cols = c("time"))
+
+# Convert time to numeric (in hours)
+growthdata_tidy$time_num <- as.numeric(gsub(" h.*", "", growthdata_tidy$time)) +
+  as.numeric(gsub(".*?([0-9]+) min", "\\1", growthdata_tidy$time)) / 60
+
+# Import plate design
+design <- import_blockdesigns(
+  files = c("Cover and no cover experiment_platedesign.csv"),
+  block_names = c("Strains", "Media", "Replicate", "Covering", "Order"),
+  startrow = c(1, 11, 21, 31, 41),
+  endrow = c(9, 19, 29, 39, 49)
+)
+
+# Merge growth data with design
+growthdata_tidy <- merge_dfs(growthdata_tidy, design)
+
+# Remove rows with missing values
+growthdata_tidy <- growthdata_tidy %>%
+  filter(!is.na(Measurements), !is.na(Strains), !is.na(Order), !is.na(Covering), !is.na(Media))
+
+# --- Create one figure per Medium, with facets per Order ---
+media_list <- unique(growthdata_tidy$Media)
+
+expected_growth_manual <- tribble(
+  ~Media,                ~Order,             ~Strains,          ~ExpectedBetter,
+  "Putrescine",          "Alteromonadales",  "4G09",            "Expected good growth",
+  "Putrescine",          "Alteromonadales",  "F3M13",           "Expected bad growth",
+  "Putrescine",          "Flavobacteriales", "5F06",            "Expected good growth",
+  "Putrescine",          "Flavobacteriales", "C3M11",           "Expected bad growth",
+  "Putrescine",          "Pseudomonadales",  "3B05",            "Expected good growth",
+  "Putrescine",          "Pseudomonadales",  "C1R06",           "Expected bad growth",
+  "Putrescine",          "Vibrionales",      "C2M01",           "Expected good growth",
+  "Putrescine",          "Vibrionales",      "E3R11",           "Expected bad growth",
+  "Putrescine",          "Rhodobacterales",  "B3M03",           "Expected good growth",
+  "Putrescine",          "Rhodobacterales",  "B3M08",           "Expected bad growth",
+  
+  "Methionine",          "Alteromonadales",  "4B03",            "Expected good growth",
+  "Methionine",          "Alteromonadales",  "I2R16",           "Expected bad growth",
+  "Methionine",          "Flavobacteriales", "5F06",            "Expected good growth",
+  "Methionine",          "Flavobacteriales", "C3M11",           "Expected bad growth",
+  "Methionine",          "Pseudomonadales",  "B2M13",           "Expected good growth",
+  "Methionine",          "Pseudomonadales",  "C1R06",           "Expected bad growth",
+  "Methionine",          "Vibrionales",      "C2M01",           "Expected good growth",
+  "Methionine",          "Vibrionales",      "1A06",            "Expected bad growth",
+  "Methionine",          "Rhodobacterales",  "DSS-3",           "Expected good growth",
+  "Methionine",          "Rhodobacterales",  "B2R22",           "Expected bad growth"
+)
+
+growthdata_tidy <- left_join(growthdata_tidy, expected_growth_manual,
+                             by = c("Media", "Order", "Strains"))
+
+for (m in media_list) {
+  subset_data <- filter(growthdata_tidy, Media == m)
+  
+  labels_df <- subset_data %>%
+    group_by(Strains, Covering, Order, Replicate) %>%
+    filter(time_num == max(time_num, na.rm = TRUE)) %>%
+    ungroup()
+  
+  p <- ggplot(subset_data, aes(x = time_num, y = Measurements,
+                               color = ExpectedBetter,
+                               linetype = Covering,
+                               group = interaction(Strains, Covering, Replicate))) +
+    geom_smooth(method = "loess", se = FALSE, span = 0.3, size = 0.6, alpha = 0.9) +
+    geom_text_repel(data = labels_df,
+                    aes(x = time_num, y = Measurements, label = Strains, color = ExpectedBetter),
+                    size = 2.5,
+                    direction = "y",
+                    hjust = 0,
+                    segment.size = 0.2,
+                    box.padding = 0.2,
+                    max.overlaps = 100,
+                    inherit.aes = FALSE) +
+    facet_wrap(~ Order, scales = "free_y") +
+    labs(title = paste("Growth Curves –", m),
+         x = "Time (hours)",
+         y = "OD600 (LOESS smoothed)",
+         color = "Predicted Stronger Strain",
+         linetype = "Cover Condition") +
+    scale_color_manual(values = c("Expected good growth" = "seagreen4",
+                                  "Expected bad growth" = "darkblue")) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  ggsave(filename = paste0("Growth_Curves_", gsub("[^a-zA-Z0-9]", "_", m), ".png"),
+         plot = p,
+         width = 16, height = 8, dpi = 300, bg = "white")
+  
+  print(p)
+}
+
+
+#-----Heatmap plate deisgn -------
+# Step 1: Get max OD600 per well and match strain info
+max_OD_labeled <- growthdata_tidy %>%
+  filter(!is.na(Measurements)) %>%
+  group_by(Well, Strains, ExpectedBetter, Media, Covering) %>%
+  summarise(max_OD = max(Measurements, na.rm = TRUE), .groups = "drop")
+
+# Step 2: Extract row and column from well name
+max_OD_labeled <- max_OD_labeled %>%
+  mutate(
+    Row = substr(Well, 1, 1),
+    Column = as.numeric(sub("^[A-Z]", "", Well))
+  )
+
+# Step 3: Plot heatmap with strain names as labels
+heatmap_strains <- ggplot(max_OD_labeled, aes(x = Column, y = Row, fill = max_OD)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Strains, color = ExpectedBetter), size = 3) +
+  geom_text(aes(label = Media), size = 3, color = "#00FFFF", vjust = 1.8) +
+  scale_fill_viridis_c(option = "plasma", name = "Max OD600") +
+  scale_color_manual(values = c("Expected good growth" = "white", "Expected bad growth" = "red"), name = "Expected") +
+  scale_y_discrete(limits = rev(LETTERS[1:8])) +
+  labs(title = "Max OD600 per Well – Strains & Media", x = "Column", y = "Row") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+# Step 4: Optional – Add 'Covering' labels based on column numbers
+# (You may want to automate this based on your layout)
+heatmap_strains <- heatmap_strains +
+  annotate("text", x = 3.5, y = 8.7, label = "Uncovered", size = 3.5, fontface = "bold") +
+  annotate("text", x = 9.5, y = 8.7, label = "Covered", size = 3.5, fontface = "bold")
+
+# Save and display
+ggsave("Figures_thesis/Plate_Heatmap_MaxOD600_Strains.png", heatmap_strains, width = 10, height = 6, dpi = 300, bg = "white")
+
+print(heatmap_strains)
