@@ -1,0 +1,40 @@
+,1,2,3,4,5,6,7,8,9,10,11,12
+A,4B03,I2R16,1A06,C2M01,B3M03,B3M08,4B03,I2R16,1A06,C2M01,B3M03,B3M08
+B,4B03,I2R16,1A06,C2M01,B3M03,B3M08,4B03,I2R16,1A06,C2M01,B3M03,B3M08
+C,5F06,C3M11,F3M13,4G09,C2M01,E3R11,5F06,C3M11,F3M13,4G09,C2M01,E3R11
+D,5F06,C3M11,F3M13,4G09,C2M01,E3R11,5F06,C3M11,F3M13,4G09,C2M01,E3R11
+E,B2M13,C1R06,C3M11,5F06,Blank m,Blank m, B2M13,C1R06,C3M11,5F06,Blank m,Blank m
+F,B2M13,C1R06,C3M11,5F06,Blank m,Blank m, B2M13,C1R06,C3M11,5F06,Blank m,Blank m
+G,DSS-3, B2R22,C1R06,3B05,,,DSS-3, B2R22,C1R06,3B05,,
+H,DSS-3, B2R22,C1R06,3B05,,,DSS-3, B2R22,C1R06,3B05,,
+,,,,,,,,,,,,
+,1,2,3,4,5,6,7,8,9,10,11,12
+A,Methionine,Methionine,Methionine,Methionine,Putrescine,Putrescine,Methionine,Methionine,Methionine,Methionine,Putrescine,Putrescine,
+B,Methionine,Methionine,Methionine,Methionine,Putrescine,Putrescine,Methionine,Methionine,Methionine,Methionine,Putrescine,Putrescine,
+C,Methionine,Methionine,Putrescine,Putrescine,Putrescine,Putrescine,Methionine,Methionine,Putrescine,Putrescine,Putrescine,Putrescine,
+D,Methionine,Methionine,Putrescine,Putrescine,Putrescine,Putrescine,Methionine,Methionine,Putrescine,Putrescine,Putrescine,Putrescine,
+E,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,
+F,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,
+G,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,
+H,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,Methionine,Methionine,Putrescine,Putrescine,Blanc,Blanc,
+,,,,,,,,,,,,
+,1,2,3,4,5,6,7,8,9,10,11,12
+A,a,a,a,a,a,a,a,a,a,a,a,a
+B,b,b,b,b,b,b,b,b,b,b,b,b
+C,a,a,a,a,a,a,a,a,a,a,a,a
+D,b,b,b,b,b,b,b,b,b,b,b,b
+E,a,a,a,a,a,a,a,a,a,a,a,a
+F,b,b,b,b,b,b,b,b,b,b,b,b
+G,a,a,a,a,a,a,a,a,a,a,a,a
+H,b,b,b,b,b,b,b,b,b,b,b,b
+,,,,,,,,,,,,
+,1,2,3,4,5,6,7,8,9,10,11,12
+A,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+B,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+C,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+D,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+E,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+F,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+G,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+H,Covered,Covered,Covered,Covered,Covered,Covered,Not covered,Not covered,Not covered,Not covered,Not covered,Not covered
+,,,,,,,,,,,,
