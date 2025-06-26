@@ -1,0 +1,116 @@
+library (gcplyr)
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(patchwork)
+
+
+#import csv file 
+#csv file should contain times (hr) in the first column (header = "time")
+#subsequent columns contain data from individual wells
+data <- ("HELUN_GROWTHCURVE 63 2.csv")
+growthdata <- read.table (data, header=TRUE, sep=',', stringsAsFactors = FALSE, dec = '.')
+
+#transform "wide" data format (each row contains data for a single time point from all wells) to "tidy" format
+growthdata_tidy <- trans_wide_to_tidy(wides = growthdata, id_cols = c("time"))
+
+
+#add in plate design
+design <- 
+  import_blockdesigns(files = c("1102205_design_salinity.csv"), 
+                      block_names = c("Strains", "Media", "Replicate"),
+                      startrow = c(1, 11, 21), endrow = c(9, 19, 29))
+
+# Add Well column manually
+design$Well <- paste0(rep(LETTERS[1:8], each = 12), 1:12)
+
+# Join using Well
+growthdata_tidy <- left_join(growthdata_tidy, design, by = "Well")
+
+#reorder wells so they plot in the correct order, only if out of order
+growthdata_tidy$Well <- 
+  factor(growthdata_tidy$Well,
+         levels = paste0(rep(LETTERS[1:8], each = 12), 1:12))
+
+#remove any NA values if needed
+growthdata_tidy <- na.omit(growthdata_tidy)
+
+
+growthdata_tidy <- growthdata_tidy %>%
+  mutate(
+    Nitrogen = ifelse(grepl("\\+", Media), "With nitrogen", "Without nitrogen"),
+    Concentration = case_when(
+      grepl("200", Media) ~ "200%",
+      grepl("100", Media) ~ "100%",
+      grepl("20", Media) ~ "20%",
+      TRUE ~ NA_character_
+    ),
+    Media_pretty = paste0(Concentration, " (", Nitrogen, ")")
+  )
+
+
+#plot growth curves All
+p_growth <- ggplot(data = growthdata_tidy, aes(x = time, y = Measurements, color = Media_pretty, shape = Replicate)) + 
+  geom_line() +
+  facet_wrap(~Strains, nrow = 1, ncol = 11) +
+  scale_color_manual(
+    values = c(
+      "200% (With nitrogen)" = "darkred",
+      "100% (With nitrogen)" = "red",
+      "20% (With nitrogen)" = "salmon",
+      "200% (Without nitrogen)" = "darkblue",
+      "100% (Without nitrogen)" = "blue",
+      "20% (Without nitrogen)" = "lightblue"
+    )
+  ) +
+  scale_x_continuous(limits = c(0, 26)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  labs(
+    y = "OD600",
+    x = "Time (h)",
+    color = "Salt & nitrogen condition",  # legend title
+    title = ""
+  ) +
+  theme_minimal()
+
+
+#plot gorwth curve only for A2R16
+# Filter to A2R16
+growth_a2r16 <- growthdata_tidy %>%
+  filter(Strains %in% c("1A01", "A2R16"))
+
+p_a2r16_growth <- ggplot(growth_a2r16, aes(
+  x = time,
+  y = Measurements,
+  color = Media_pretty,
+  #linetype = Strains,  # <- distinguishes strains
+  group = interaction(Media_pretty, Replicate, Strains))) +
+  geom_line(size = 1) +
+  facet_wrap(~Strains) +
+  scale_color_manual(
+    values = c(
+      "200% (With nitrogen)" = "darkred",
+      "100% (With nitrogen)" = "red",
+      "20% (With nitrogen)" = "salmon",
+      "200% (Without nitrogen)" = "darkblue",
+      "100% (Without nitrogen)" = "blue",
+      "20% (Without nitrogen)" = "lightblue"
+    )
+  ) +
+  scale_x_continuous(limits = c(0, 26)) +
+  scale_y_continuous(limits = c(0, 0.7)) +
+  labs(
+    title = "",
+    x = "Time (h)",
+    y = "OD600",
+    color = "Salt & nitrogen"
+  ) +
+  theme_minimal(base_size = 24)
+
+print(p_a2r16_growth)
+
+ggsave("Figures_thesis/salinity.png", p_a2r16_growth, width = 30, height = 10, units = "in", dpi = 300, bg = "white")
+
