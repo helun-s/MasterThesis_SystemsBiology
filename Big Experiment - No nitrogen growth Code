@@ -1,0 +1,143 @@
+# --- Libraries ---
+library(plyr)
+library(ggplot2)
+library(gcplyr)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(tidyr)
+library(writexl)
+library(ggsci)
+library(patchwork)
+library(viridis)
+
+# --- Settings ---
+media_name <- "MBL - N"
+days <- c(0, 24, 48, 72, 96, 168, 216, 384)
+files <- paste0("BigExperiment_T", 0:7, "_", media_name, ".csv")
+
+# --- Load and combine timepoints ---
+combined_data <- map2_dfr(files, days, ~{
+  read.table(.x, header = TRUE, sep = ",", stringsAsFactors = FALSE, dec = ".", fill = TRUE) %>%
+    mutate(day = .y)
+})
+
+# --- Tidy ---
+growthdata_tidy <- pivot_longer(combined_data,
+                                cols = -day,
+                                names_to = "well",
+                                values_to = "value")
+
+# --- Load design ---
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"),
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+# --- Annotate ---
+growthdata_annotated <- merge_dfs(growthdata_tidy, design, by = c("well" = "Well")) %>%
+  na.omit() %>%
+  mutate(Media = media_name)
+
+# --- Max mean uncorrected OD600 per strain (across timepoints) ---
+mean_growth_uncorrected_all <- growthdata_annotated %>%
+  group_by(Strains, Order, day) %>%
+  summarise(mean_OD = mean(value, na.rm = TRUE), .groups = "drop")
+
+max_OD_uncorrected <- mean_growth_uncorrected_all %>%
+  group_by(Strains, Order) %>%
+  summarise(Max_OD600 = max(mean_OD, na.rm = TRUE), .groups = "drop") %>%
+  filter(Max_OD600 >= 0.15, !Strains %in% c("empty1"))
+
+# --- Filter uncorrected mean growth by those strains ---
+mean_growth_uncorrected <- mean_growth_uncorrected_all %>%
+  filter(Strains %in% max_OD_uncorrected$Strains)
+
+
+# --- Subtract time 0 OD from all points ---
+OD_time0 <- growthdata_annotated %>%
+  filter(day == 0) %>%
+  select(well, OD0 = value)
+
+growth_corrected <- left_join(growthdata_annotated, OD_time0, by = "well") %>%
+  mutate(corrected_OD = value - OD0)
+
+# --- Mean corrected OD per strain per timepoint ---
+mean_growth <- growth_corrected %>%
+  group_by(Strains, Order, day) %>%
+  summarise(mean_OD = mean(corrected_OD, na.rm = TRUE), .groups = "drop")
+
+# --- Max mean corrected OD600 per strain (across timepoints) ---
+max_OD_per_strain <- mean_growth %>%
+  group_by(Strains, Order) %>%
+  summarise(Max_OD600 = max(mean_OD, na.rm = TRUE), .groups = "drop")
+
+# --- Filter for plotting ---
+max_OD_filtered <- max_OD_per_strain %>%
+  filter(!Order %in% c("N/A", "Bacillales", "Staphylococcales", "Granulosicoccales", "Cytophagales"))
+
+# --- Threshold filter (for bar + jitter plots) ---
+filtered_strains_bar <- max_OD_filtered %>%
+  filter(Max_OD600 >= 0.15, !Strains %in% c("empty1"))
+
+# --- PLOTS ---
+
+# --- Growth curve plot (uncorrected) ---
+p_growth <- ggplot(mean_growth_uncorrected, aes(x = day, y = mean_OD, group = Strains, color = Strains)) +
+  geom_line(size = 0.6) +
+  theme_minimal(base_size = 20) +
+  scale_x_continuous(breaks = days, labels = paste0(days), expand = expansion(mult = c(0.05, 0.1))) +
+  labs(x = "Time (h)", y = "OD600", color = "Strains")
+
+ggsave(paste0("Figures_thesis/Growthcurve_No nitrogen_", media_name, "_uncorrected.png"),
+       p_growth, width = 22, height = 12, dpi = 300, bg = "white")
+
+print(p_growth)
+
+# --- Barplot of max OD600 (corrected) ---
+p_barplot <- ggplot(filtered_strains_bar, aes(x = Max_OD600, y = reorder(Strains, Max_OD600))) +
+  geom_col(fill = "#377eb8") +
+  coord_flip() +
+  labs(x = "Maximum corrected OD600", y = "Strain") +
+  theme_minimal(base_size = 20)
+
+ggsave(paste0("Figures_thesis/Barplot_MaxOD_", media_name, "_corrected.png"),
+       p_barplot, width = 24, height = 10, dpi = 300, bg = "white")
+
+# --- Jitter plot by Order (corrected) ---
+p_jitter_order <- ggplot(max_OD_filtered, aes(x = reorder(Order, -Max_OD600), y = Max_OD600)) +
+  geom_jitter(width = 0.2, size = 2.5, alpha = 0.7, color = "#377eb8") +
+  theme_minimal(base_size = 20) +
+  scale_y_continuous(limits = c(0, NA)) +
+  labs(x = "Taxonomic Order", y = "Maximum corrected OD600")
+
+ggsave(paste0("Figures_thesis/Jitterplot_Order_", media_name, "_corrected.png"),
+       p_jitter_order, width = 16, height = 8, dpi = 300, bg = "white")
+
+print(p_jitter_order)
+
+# --- Combine with shared theme ---
+common_theme <- theme_minimal(base_size = 24) +
+  theme(
+    axis.title = element_text(size = 34),
+    axis.text = element_text(size = 30),
+    legend.text = element_text(size = 32),
+    legend.title = element_text(size = 34),
+    plot.tag = element_text(size = 40, face = "bold")
+  )
+
+p_growth <- p_growth + common_theme
+p_barplot <- p_barplot + common_theme
+p_jitter_order <- p_jitter_order + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+combined_plot <- p_growth + p_jitter_order +
+  plot_layout(ncol = 1, widths = c(1, 1)) +
+  plot_annotation(tag_levels = "A")
+
+ggsave("Figures_thesis/Figure_Combined_growth_bar_jitter_corrected.png", combined_plot,
+       width = 40, height = 25, dpi = 300, bg = "white", limitsize = FALSE)
+
+print(combined_plot)
