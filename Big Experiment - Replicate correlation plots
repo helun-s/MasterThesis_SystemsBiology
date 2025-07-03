@@ -1,0 +1,274 @@
+library(tidyverse)
+library(gcplyr)
+library(purrr)
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(tidyr)
+library(ggpubr)
+library(grid)
+library(gridExtra)
+
+# --- Instellingen ---
+media_name <- c("MB", "Ammonia", "Nitrate", "Nitrite", "Urea",               #Basics
+"Acetamide", "Formamide",                                                    #Amides
+"Thymidine", "Thymine", "Cytidine",                                          #Nucleotides
+"Methylamine", "Ethylamine", "Triethylamine", "N-Buthylamine", "Putrescine", #Amines
+"GlcNac + C", "GlcNac - C", "Glucosamine + C", "Glucosamine - C",            #Amino sugars
+
+"Alanine as N. source", "Glycine as N. source", "Proline as N. source", "Arginine as N. source",
+"L-Leucine as N. source", "L-Methionine as N. source", "L-Valine as N. source", "Serine as N. source",
+"Threonine as N. source", "Glutamate as N. source", "Aspartate as N. source", "L-Histidine as N. source",
+"L-Lysine as N. source", "Glutamine as N. source", "Ornithine as N. source", "Asparagine as N. source",
+
+"Alanine as C. source", "Glycine as C. source", "Proline as C. source", "Arginine as C. source",
+"L-Leucine as C. source", "L-Methionine as C. source", "L-Valine as C. source", "Serine as C. source",
+"Threonine as C. source", "Glutamate as C. source", "Aspartate as C. source", "L-Histidine as C. source",
+"L-Lysine as C. source", "Glutamine as C. source", "Ornithine as C. source", "Asparagine as C. source")
+
+media_groups <- data.frame( 
+  Media = c("MB", "Ammonia", "Nitrate", "Nitrite", "Urea", 
+            "Acetamide", "Formamide", 
+            "Thymidine", "Thymine", "Cytidine", 
+            "Methylamine", "Ethylamine", "Triethylamine", "N-Buthylamine", "Putrescine",
+            "GlcNac + C", "GlcNac - C", "Glucosamine + C", "Glucosamine - C", 
+            
+            "Alanine as N. source", "Glycine as N. source", "Proline as N. source", "Arginine as N. source",
+            "L-Leucine as N. source", "L-Methionine as N. source", "L-Valine as N. source", "Serine as N. source",
+            "Threonine as N. source", "Glutamate as N. source", "Aspartate as N. source", "L-Histidine as N. source",
+            "L-Lysine as N. source", "Glutamine as N. source", "Ornithine as N. source", "Asparagine as N. source", 
+            
+            "Alanine as C. source", "Glycine as C. source", "Proline as C. source", "Arginine as C. source",
+            "L-Leucine as C. source", "L-Methionine as C. source", "L-Valine as C. source", "Serine as C. source",
+            "Threonine as C. source", "Glutamate as C. source", "Aspartate as C. source", "L-Histidine as C. source",
+            "L-Lysine as C. source", "Glutamine as C. source", "Ornithine as C. source", "Asparagine as C. source"),
+
+   Group = c("", "Basics", "Basics", "Basics", "Basics", 
+            "Amides", "Amides", 
+            "Nucleotides", "Nucleotides", "Nucleotides", 
+            "Amines", "Amines", "Amines", "Amines", "Amines",
+            "Amino sugars", "Amino sugars", "Amino sugars", "Amino sugars", 
+            
+            "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source",
+            "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", "Amino acids as N. source", 
+            
+            "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source",
+            "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source", "Amino acids as C. source")) 
+            
+
+# --- Load timepoints (T1-T7) ---
+days <- c(24, 48, 72, 96, 168, 216, 384)
+
+file_info <- expand.grid(
+  timepoint = 1:7,
+  medium = media_name,
+  stringsAsFactors = FALSE
+)
+
+file_info$filename <- paste0("BigExperiment_T", file_info$timepoint, "_", file_info$medium, ".csv")
+file_info$day <- days[file_info$timepoint]
+
+growth_data <- pmap_dfr(file_info, function(timepoint, medium, filename, day) {
+  df <- read.table(filename, header = TRUE, sep = ",", dec = ".", fill = TRUE)
+  df$day <- day
+  df$Medium <- medium
+  return(df)
+})
+
+
+growthdata_tidy <- pivot_longer(growth_data, cols = -c(day, Medium), names_to = "well", values_to = "value")
+growthdata_tidy$well <- gsub("^([A-P])0([1-9])$", "\\1\\2", growthdata_tidy$well)
+
+# --- Load plate design ---
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"), 
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+# --- Combine growth and design info ---
+growthdata_annotated <- merge_dfs(growthdata_tidy, design, by = c("well" = "Well")) %>%
+  na.omit() %>%
+  mutate(Replicate = as.character(Replicate))
+
+# --- Make numeric  ---
+replicate_wide <- growthdata_annotated %>%
+  select(day, Medium, Order, Strains, Replicate, value) %>%
+  pivot_wider(names_from = Replicate, values_from = value) %>%
+  filter(!is.na(a) & !is.na(b)) %>%
+  mutate(
+    a = map_dbl(a, ~ as.numeric(.x)[1]),
+    b = map_dbl(b, ~ as.numeric(.x)[1])
+  )
+
+# Add media group info to replicate_wide BEFORE filtering
+replicate_wide <- replicate_wide %>%
+  left_join(media_groups, by = c("Medium" = "Media")) %>%
+  mutate(Group = ifelse(is.na(Group) | Group == "", "Other", Group))
+
+# --- Make labels T1-T7 ---
+replicate_wide <- replicate_wide %>%
+  mutate(timepoint = case_when(
+    day == 24 ~ "T1",
+    day == 48 ~ "T2",
+    day == 72 ~ "T3",
+    day == 96 ~ "T4",
+    day == 168 ~ "T5",
+    day == 216 ~ "T6",
+    day == 384 ~ "T7",
+    TRUE ~ as.character(day)
+  ))
+
+grouped_data <- replicate_wide %>%
+  filter(!is.na(Group)) %>%
+  group_by(Group) %>%
+  group_split()
+
+group_names <- grouped_data %>%
+  map_chr(~ unique(.x$Group))
+
+# --- Make the plot ---
+p_all <- ggplot(replicate_wide, aes(x = b, y = a)) +
+  geom_point(alpha = 0.5, size = 0.8) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  stat_cor(method = "pearson", size = 6, color = "black") +
+  facet_wrap(~ Medium, scales = "fixed", ncol = 10) +  
+  theme_minimal() +
+  labs(
+    title = "Replicate reproducibility across all media",
+    x = "Replicate B (OD600)",
+    y = "Replicate A (OD600)"
+  ) +
+  theme(
+    strip.text = element_text(face = "bold", size = 25),
+    axis.text = element_text(size = 23),
+    axis.title = element_text(size = 25),
+    panel.spacing = unit(1, "lines"),
+    axis.title.x = element_text(margin = margin(t = 22)),
+    axis.title.y = element_text(margin = margin(r = 22))
+  )
+
+ggsave("Figures_thesis/Replicate_Correlation_AllMedia_oneplot.png", p_all, width = 40, height = 25, dpi = 300, bg = "white")
+
+print(p_all)
+
+#--- Overal R -----
+
+overall_r <- cor(replicate_wide$a, replicate_wide$b, method = "pearson", use = "complete.obs")
+print(paste("Overall R =", round(overall_r, 3)))
+
+#--- Table for R ----
+
+r_by_medium <- replicate_wide %>%
+  group_by(Medium) %>%
+  summarise(R = cor(a, b, use = "complete.obs")) %>%
+  arrange(desc(R))
+
+r_by_group <- replicate_wide %>%
+  group_by(Group) %>%
+  summarise(R = cor(a, b, use = "complete.obs")) %>%
+  arrange(desc(R))
+
+View(r_by_medium)
+View(r_by_group)
+
+#--------- ------
+
+example_media <- r_by_medium %>%
+  mutate(category = case_when(
+    R < 0.60 ~ "Very unreliable",  
+    R < 0.85 ~ "Unreliable",
+    R >= 0.95 ~ "Excellent"
+  )) %>%
+  group_by(category) %>%
+  slice(1)  # Pick one medium per category
+
+example_plots <- list() 
+
+for (i in seq_len(nrow(example_media))) {
+  medium <- example_media$Medium[i]
+  r_value <- round(example_media$R[i], 2)
+  category <- example_media$category[i]
+  
+  plot_df <- replicate_wide %>% filter(Medium == medium)
+  
+  p <- ggplot(plot_df, aes(x = b, y = a)) +
+    geom_point(alpha = 0.6) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    stat_cor(method = "pearson", size = 6) +
+    labs(
+      title = paste0(category, " reproducibility\n(", medium, ", R = ", r_value, ")"),
+      x = "Replicate B (OD600)",
+      y = "Replicate A (OD600)"
+    ) +
+    theme_minimal() +
+    labs(
+      title = "",
+      x = "Replicate B (OD600)",
+      y = "Replicate A (OD600)"
+    ) +
+    theme(
+      strip.text = element_text(face = "bold", size = 16),
+      axis.text = element_text(size = 17),
+      axis.title = element_text(size = 20),
+      panel.spacing = unit(1, "lines"),
+      axis.title.x = element_text(margin = margin(t = 10)),
+      axis.title.y = element_text(margin = margin(r = 10))
+    )
+  
+  example_plots[[i]] <- p
+}
+
+combined_plot <- ggarrange(
+  plotlist = example_plots,
+  ncol = 4, 
+  labels = LETTERS[1:length(example_plots)]
+)
+
+print(combined_plot)
+
+ggsave("Figures_thesis/Replicate_R_examples.png", combined_plot, width = 14, height = 5, dpi = 300, bg = "white")
+
+#---- Combine example figures -----
+
+plots_as_grobs <- c(
+  list(ggplotGrob(p_all)),
+  lapply(example_plots, ggplotGrob)
+)
+
+# Define media names
+media_labels <- c("All media", example_media$Medium)
+
+# Generate letter labels
+LETTERS[3:(2 + 4)] 
+
+#Combine labels, titles and plotgrobs
+labeled_grobs <- map2(seq_along(plots_as_grobs), plots_as_grobs, function(i, grob) {
+  arrangeGrob(
+    grobs = list(
+      textGrob(paste0(labels[i], ": ", media_labels[i]),
+               x = 0, hjust = 0, gp = gpar(fontsize = 20, fontface = "bold")),
+      grob
+    ),
+    ncol = 1,
+    heights = unit(c(0.8, 9.2), "null")
+  )
+})
+
+# Combine all plots horizontal
+final_combined <- arrangeGrob(
+  grobs = labeled_grobs,
+  ncol = length(labeled_grobs),
+  widths = unit(rep(1, length(labeled_grobs)), "null")
+)
+
+#Save
+ggsave("Figures_thesis/Replicate_Correlation_HorizontalCombined.png",
+       plot = final_combined,
+       width = 42, height = 10, dpi = 300, bg = "white")
+
+grid.newpage()
+grid.draw(final_combined)
