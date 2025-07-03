@@ -1,0 +1,246 @@
+library(gcplyr)
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(tidyr)
+library(RColorBrewer)
+library(FSA)
+library(rstatix)
+library(ggpubr)
+
+# Media to compare
+media_names <- c("MB", 
+                 "Alanine as N. source", "Glycine as N. source", "Proline as N. source", "Arginine as N. source",
+                 "L-Leucine as N. source", "L-Methionine as N. source", "L-Valine as N. source", "Serine as N. source",
+                 "Threonine as N. source", "Glutamate as N. source", "Aspartate as N. source", "L-Histidine as N. source",
+                 "L-Lysine as N. source", "Glutamine as N. source", "Ornithine as N. source", "Asparagine as N. source", 
+                 "Alanine as C. source", "Glycine as C. source", "Proline as C. source", "Arginine as C. source",
+                 "L-Leucine as C. source", "L-Methionine as C. source", "L-Valine as C. source", "Serine as C. source",
+                 "Threonine as C. source", "Glutamate as C. source", "Aspartate as C. source", "L-Histidine as C. source",
+                 "L-Lysine as C. source", "Glutamine as C. source", "Ornithine as C. source", "Asparagine as C. source")
+
+neg_control_name <- "MBL - N"
+growth_threshold <- 0.1
+
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"), 
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+load_neg_data <- function(media) {
+  days <- c(24, 48, 72, 96, 168, 216, 384)
+  neg_files <- paste0("BigExperiment_T", 1:7, "_", media, ".csv")
+  neg_data <- map2_dfr(neg_files, days, ~ {
+    df <- read.table(.x, header = TRUE, sep = ",", stringsAsFactors = FALSE, dec = ".", fill = TRUE)
+    df$day <- .y
+    df
+  })
+  tidy_neg <- pivot_longer(neg_data, cols = -day, names_to = "well", values_to = "neg_value")
+  tidy_neg$well <- gsub("^([A-P])0([1-9])$", "\\1\\2", tidy_neg$well)
+  return(tidy_neg)
+}
+
+tidy_neg <- load_neg_data(neg_control_name)
+
+growth_summary <- list()
+strain_lists <- list()
+max_od_data <- list()
+
+for (media_name in media_names) {
+  cat("Processing:", media_name, "\n")
+  days <- c(24, 48, 72, 96, 168, 216, 384)
+  media_files <- paste0("BigExperiment_T", 1:7, "_", media_name, ".csv")
+  growth_data <- map2_dfr(media_files, days, ~ {
+    df <- read.table(.x, header = TRUE, sep = ",", stringsAsFactors = FALSE, dec = ".", fill = TRUE)
+    df$day <- .y
+    df
+  })
+  tidy_data <- pivot_longer(growth_data, cols = -day, names_to = "well", values_to = "value")
+  tidy_data$well <- gsub("^([A-P])0([1-9])$", "\\1\\2", tidy_data$well)
+  corrected_data <- left_join(tidy_data, tidy_neg, by = c("day", "well")) %>%
+    mutate(value = value - neg_value)
+  growth_annotated <- merge_dfs(corrected_data, design, by = c("well" = "Well")) %>%
+    na.omit()
+  growth_annotated$Media <- media_name
+  
+  filtered_strains <- growth_annotated %>%
+    group_by(Strains) %>%
+    summarise(max_value = max(value, na.rm = TRUE)) %>%
+    filter(max_value >= growth_threshold)
+  
+  filtered_data <- growth_annotated %>%
+    filter(Strains %in% filtered_strains$Strains)
+  
+  total_strains <- length(unique(design$Strains))
+  percent_grew <- (length(unique(filtered_data$Strains)) / total_strains) * 100
+  
+  growth_summary[[media_name]] <- data.frame(
+    Media = media_name,
+    Percentage = percent_grew
+  )
+  strain_lists[[media_name]] <- unique(filtered_data$Strains)
+  
+#MaxOD per replicate per strain
+  max_per_replicate <- growth_annotated %>%
+    group_by(Strains, Replicate) %>%
+    summarise(MaxOD_replicate = max(value, na.rm = TRUE), .groups = "drop")
+  
+#Mean MaxOD across replicates per strain
+  mean_maxod <- max_per_replicate %>%
+    group_by(Strains) %>%
+    summarise(MeanMaxOD = mean(MaxOD_replicate, na.rm = TRUE), .groups = "drop") %>%
+    filter(MeanMaxOD >= growth_threshold) %>%
+    mutate(Media = media_name)
+  
+  # Store the result
+  max_od_data[[media_name]] <- mean_maxod
+}
+
+growth_summary_df <- bind_rows(growth_summary)
+growth_summary_df$Base <- sub(" as .*", "", growth_summary_df$Media)
+growth_summary_df$SourceType <- ifelse(grepl("N\\. source", growth_summary_df$Media), "N. source",
+                                       ifelse(grepl("C\\. source", growth_summary_df$Media), "C. source", "Other"))
+growth_summary_df <- growth_summary_df %>%
+  filter(Media != "MB")
+
+growth_summary_df$SourceType <- factor(growth_summary_df$SourceType,
+                                       levels = c("N. source", "C. source"))
+
+growth_summary_df$Base <- factor(growth_summary_df$Base, levels = unique(growth_summary_df$Base))
+
+#----- Bar plots percentage ------
+
+p_bar <- ggplot(growth_summary_df, aes(x = Percentage, y = SourceType, fill = SourceType)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~ Base, scales = "free_y", ncol = 1, strip.position = "top") +
+  theme_minimal(base_size = 20) +
+  labs(x = "Percentage of Growing Strains", y = "Source Type", fill = "Source Type") +
+  scale_x_continuous(labels = percent_format(scale = 1)) +
+  scale_fill_manual(values = c("N. source" = "#377eb8", "C. source" = "#e41a1c")) +
+  theme(axis.text.y = element_text(size = 18),
+        strip.text = element_text(face = "bold", size = 10),
+        legend.position = "bottom")
+
+ggsave("Figures_thesis/Barplot N. VS C. source.png", p_bar, width = 14, height = 18, dpi = 300, bg = "white")
+print(p_bar)
+
+# --- Boxplot of max OD ---
+
+max_od_df <- bind_rows(max_od_data)
+max_od_df$Base <- sub(" as .*", "", max_od_df$Media)
+max_od_df$SourceType <- ifelse(grepl("N\\. source", max_od_df$Media), "N. source",
+                               ifelse(grepl("C\\. source", max_od_df$Media), "C. source", "Other"))
+max_od_clean <- max_od_df %>%
+  filter(SourceType %in% c("N. source", "C. source")) %>%
+  select(Strains, MeanMaxOD, SourceType)   # <-- change this line!
+
+anova_model <- aov(MeanMaxOD ~ SourceType, data = max_od_clean)
+
+print(summary(anova_model))
+print(TukeyHSD(anova_model))
+
+
+p_box <- ggplot(max_od_clean, aes(x = SourceType, y = MeanMaxOD, fill = SourceType)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, width = 0.6) +
+  geom_jitter(width = 0.15, size = 0.6, alpha = 0.4) +
+  geom_hline(yintercept = growth_threshold, linetype = "dashed", color = "black") +
+  scale_y_continuous(limits = c(0, 2)) +
+  theme_minimal(base_size = 20) +
+  labs(x = "Source Type", y = "Maximum OD600", fill = "Source Type") +
+  scale_fill_manual(values = c("N. source" = "#377eb8", "C. source" = "#e41a1c")) +
+  theme(legend.position = "none")
+
+ggsave("Figures_thesis/Boxplot_max_OD_ANOVA.png", p_box, width = 15, height = 8, dpi = 300, bg = "white")
+print(p_box)
+
+
+# --- Boxplot per Order: N. vs C. only ---
+
+# Add Order back to max_od_df
+max_od_order_df <- bind_rows(max_od_data) %>%
+  left_join(design[, c("Strains", "Order")], by = "Strains")
+
+max_od_order_df$Base <- sub(" as .*", "", max_od_order_df$Media)
+max_od_order_df$SourceType <- ifelse(grepl("N\\. source", max_od_order_df$Media), "N. source",
+                                     ifelse(grepl("C\\. source", max_od_order_df$Media), "C. source", "Other"))
+
+# Keep only N and C
+max_od_order_df <- max_od_order_df %>%
+  filter(SourceType %in% c("N. source", "C. source")) %>%
+  filter(!Order %in% c("N/A", "Bacillales", "Cytophagales", "Granulosicoccales", "Staphylococcales")) %>%
+  filter(!is.na(Order)) %>%
+  mutate(
+    SourceType = factor(SourceType, levels = c("N. source", "C. source")),
+    Order = factor(Order)
+  )
+
+# Plot
+p_order <- ggplot(max_od_order_df, aes(x = SourceType, y = MeanMaxOD, fill = SourceType)) +
+  facet_wrap(~ Order, scales = "fixed") +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_jitter(aes(color = SourceType), size = 0.8, alpha = 0.4,
+              position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) +
+  geom_hline(yintercept = growth_threshold, linetype = "dashed", color = "black") +
+  scale_y_continuous(limits = c(0, 2)) +
+  theme_minimal(base_size = 20) +
+  labs(title = "", x = "Taxonomic Order", y = "Maximum OD600",
+       fill = "Source Type", color = "Source Type") +
+  scale_fill_manual(values = c("N. source" = "#377eb8", "C. source" = "#e41a1c")) +
+  scale_color_manual(values = c("N. source" = "#377eb8", "C. source" = "#e41a1c")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("Figures_thesis/Boxplot_max_OD_N_vs_C_per_order.png",
+       p_order, width = 15, height = 8, dpi = 300, bg = "white")
+
+print("Saved boxplot of max OD600 per Order and Source Type (no Both)")
+print(p_order)
+
+
+
+# Set a shared theme
+common_theme <- theme_minimal(base_size = 39) +
+  theme(
+    axis.title = element_text(size = 47),
+    axis.text = element_text(size = 43),
+    legend.text = element_text(size = 43),
+    legend.title = element_text(size = 45),
+    plot.tag = element_text(size = 60, face = "bold")
+  )
+
+# Apply to both plots
+p_bar <- p_bar + common_theme +
+  theme(axis.text.y = element_text(size = 38))
+p_box <- p_box + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # angled x-axis only for boxplot
+p_order <- p_order + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Force tag on empty panel B ---
+p_empty_D <- ggplot() + theme_void() + labs(title = NULL) +
+  theme(plot.tag = element_text(size = 50, face = "bold")) +
+  ggtitle(NULL)
+
+# Layout grid (2x2)
+layout_design <- "
+AB
+CD
+"
+
+# Combine and assign plot tags via tag_levels
+combined_plot <- (
+  p_bar + p_box + p_order + p_empty_D
+) +
+  plot_layout(design = layout_design) +
+  plot_annotation(tag_levels = 'A')
+
+ggsave("Figures_thesis/Figure_Combined_Bar_Box1.png",
+       combined_plot,
+       width = 75,
+       height = 70,
+       dpi = 300,
+       bg = "white",
+       limitsize = FALSE)
