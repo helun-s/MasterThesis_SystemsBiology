@@ -1,0 +1,249 @@
+# --- Libraries ---
+library(gcplyr)
+library(plyr)
+library(ggplot2)
+library(dplyr)
+library(growthcurver)
+library(purrr)
+library(scales)
+library(tidyr)
+library(writexl)
+library(viridis)
+library(patchwork)
+
+# --- Media to compare ---
+media_names <- c("Ammonia", "Nitrate", "Nitrite", "Urea",
+                 "Acetamide", "Formamide",
+                 "Thymidine", "Thymine", "Cytidine",
+                 "Methylamine", "Ethylamine", "Triethylamine", "N-Buthylamine", "Putrescine",
+                 "GlcNac + C", "GlcNac - C", "Glucosamine + C", "Glucosamine - C",
+                 "Alanine as N. source", "Glycine as N. source", "Proline as N. source", "Arginine as N. source",
+                 "L-Leucine as N. source", "L-Methionine as N. source", "L-Valine as N. source", "Serine as N. source",
+                 "Threonine as N. source", "Glutamate as N. source", "Aspartate as N. source", "L-Histidine as N. source",
+                 "L-Lysine as N. source", "Glutamine as N. source", "Ornithine as N. source", "Asparagine as N. source")
+
+neg_control_name <- "MBL - N"
+
+# --- Media groups ---
+media_groups <- data.frame(
+  Media = media_names,
+  Group = c("Basics", "Basics", "Basics", "Basics",
+            "Amides", "Amides",
+            "Nucleotides", "Nucleotides", "Nucleotides",
+            "Amines", "Amines", "Amines", "Amines", "Amines",
+            "Amino sugars", "Amino sugars", "Amino sugars", "Amino sugars",
+            rep("Amino acids", 16))
+)
+
+# --- Load design ---
+design <- import_blockdesigns(
+  files = c("BigExperiment_design.csv"),
+  block_names = c("Strains", "Replicate", "Order"),
+  startrow = c(1, 18, 35), endrow = c(17, 34, 51)
+)
+
+# --- Days ---
+days <- c(24, 48, 72, 96, 168, 216, 384)
+
+# --- Load negative control ---
+load_neg_data <- function(media) {
+  neg_files <- paste0("BigExperiment_T", 1:7, "_", media, ".csv")
+  neg_data <- map2_dfr(neg_files, days, ~ {
+    df <- read.table(.x, header = TRUE, sep = ",", stringsAsFactors = FALSE, dec = ".", fill = TRUE)
+    df$day <- .y
+    df
+  })
+  tidy_neg <- pivot_longer(neg_data, cols = -day, names_to = "well", values_to = "neg_value")
+  tidy_neg$well <- gsub("^([A-P])0([1-9])$", "\1\2", tidy_neg$well)
+  return(tidy_neg)
+}
+
+tidy_neg <- load_neg_data(neg_control_name)
+
+# --- Initialize lists ---
+growth_summary <- list()
+growthdata_annotated_all <- list()
+
+# --- Main loop ---
+for (media_name in media_names) {
+  cat("Processing:", media_name, "\n")
+  
+  media_files <- paste0("BigExperiment_T", 1:7, "_", media_name, ".csv")
+  media_data <- map2_dfr(media_files, days, ~ {
+    df <- read.table(.x, header = TRUE, sep = ",", stringsAsFactors = FALSE, dec = ".", fill = TRUE)
+    df$day <- .y
+    df
+  })
+  
+  tidy_data <- pivot_longer(media_data, cols = -day, names_to = "well", values_to = "value")
+  tidy_data$well <- gsub("^([A-P])0([1-9])$", "\1\2", tidy_data$well)
+  
+  corrected_data <- left_join(tidy_data, tidy_neg, by = c("day", "well")) %>%
+    mutate(value = value - neg_value)
+  
+  annotated <- merge_dfs(corrected_data, design, by = c("well" = "Well")) %>%
+    na.omit() %>%
+    mutate(Media = media_name)
+  
+  # ---- Plate heatmap ----
+  max_per_well <- annotated %>%
+    group_by(well, Media) %>%
+    summarise(max_OD = max(value, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Row = substr(well, 1, 1),
+           Column = as.numeric(sub("^[A-P]", "", well)))
+  
+  p_plate <- ggplot(max_per_well, aes(x = Column, y = Row, fill = max_OD)) +
+    geom_tile(color = "white") +
+    scale_fill_viridis_c(option = "plasma", na.value = "white")+
+    coord_fixed() +
+    scale_y_discrete(limits = rev(LETTERS[1:16])) +
+    theme_minimal(base_size = 12) +
+    labs(title = paste("Plate Heatmap -", media_name),
+         x = "Column", y = "Row", fill = "Max OD600")
+  
+  ggsave(paste0("Figures_thesis/PlateHeatmap_", gsub(" ", "_", media_name), ".png"),
+         p_plate, width = 8, height = 6, dpi = 300, bg = "white")
+  
+  # ---- Growth summary ----
+  max_per_strain <- annotated %>%
+    group_by(Strains) %>%
+    summarise(max_OD = max(value, na.rm = TRUE), .groups = "drop")
+  
+  strains_grew <- max_per_strain %>%
+    filter(max_OD >= 0.1) %>%
+    pull(Strains)
+  
+  total_strains <- length(unique(design$Strains))
+  percent_grew <- (length(strains_grew) / total_strains) * 100
+  
+  growth_summary[[media_name]] <- data.frame(Media = media_name, Percentage = percent_grew)
+  
+  growthdata_annotated_all[[media_name]] <- annotated
+}
+
+# --- Save annotated data ---
+saveRDS(growthdata_annotated_all, "Figures_thesis/growthdata_annotated_all.rds")
+cat("Saved growthdata_annotated_all.rds\n")
+
+# --- Summary dataframe ---
+growth_summary_df <- bind_rows(growth_summary)
+growth_summary_df <- left_join(growth_summary_df, media_groups, by = "Media")
+growth_summary_df$Media <- factor(growth_summary_df$Media,
+                                  levels = growth_summary_df %>%
+                                    arrange(Percentage) %>%
+                                    pull(Media))
+growth_summary_df$Media_short <- gsub(" as N. source", "", growth_summary_df$Media)
+
+# --- Barplot ---
+p_barplot <- ggplot(growth_summary_df, aes(x = reorder(Media_short, Percentage), y = Percentage, fill = Group)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("Basics" = "#4daf4a", "Amides" = "#ffff33", "Nucleotides" = "#e41a1c",
+                               "Amines" = "#984ea3", "Amino sugars" = "#377eb8", "Amino acids" = "#ff7f00")) +
+  coord_flip() +
+  theme_minimal(base_size = 20) +
+  labs(title = "", x = "Media", y = "Percentage", fill = "Group") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1)) +
+  theme(legend.position = "right", strip.text.y = element_blank())
+
+ggsave("Figures_thesis/growth_per_media_percentage2.png", p_barplot, width = 10, height = 8, dpi = 300, bg = "white")
+print("Saved summary barplot")
+print(p_barplot)
+
+# --- Boxplot per medium ---
+combined_growth_data <- bind_rows(growthdata_annotated_all)
+
+combined_growth_data <- left_join(combined_growth_data, media_groups, by = "Media")
+
+combined_growth_data <- combined_growth_data %>%
+  filter(value >= 0)
+
+media_order <- combined_growth_data %>%
+  group_by(Media) %>%
+  summarise(median_OD = median(value, na.rm = TRUE)) %>%
+  arrange(median_OD) %>%
+  pull(Media)
+
+combined_growth_data$Media <- factor(combined_growth_data$Media, levels = media_order)
+
+p_boxplot <- ggplot(combined_growth_data, aes(x = Media, y = value, fill = Group)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(aes(color = Group), width = 0.2, size = 0.8, alpha = 0.4, show.legend = FALSE) +
+  theme_minimal(base_size = 20) +
+  scale_fill_manual(values = c("Basics" = "#4daf4a", "Amides" = "#ffff33", "Nucleotides" = "#e41a1c",
+                               "Amines" = "#984ea3", "Amino sugars" = "#377eb8", "Amino acids" = "#ff7f00")) +
+  scale_color_manual(values = c("Basics" = "#4daf4a", "Amides" = "#ffff33", "Nucleotides" = "#e41a1c",
+                                "Amines" = "#984ea3", "Amino sugars" = "#377eb8", "Amino acids" = "#ff7f00")) +
+  scale_y_continuous(limits = c(0, 1.5)) +
+  labs(title = "", x = "Medium", y = "OD600", fill = "Group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 14), legend.position = "right")
+
+
+ggsave("Figures_thesis/Boxplot_OD600_per_Media.png", p_boxplot, width = 16, height = 8, dpi = 300, bg = "white")
+print(p_boxplot)
+
+#--------- Combine bar plot and boxplots --------
+
+# Set a shared theme
+common_theme <- theme_minimal(base_size = 24) +
+  theme(
+    axis.title = element_text(size = 28),
+    axis.text = element_text(size = 24),
+    legend.text = element_text(size = 26),
+    legend.title = element_text(size = 28),
+    plot.tag = element_text(size = 40, face = "bold")
+  )
+
+# Apply to both plots
+p_barplot <- p_barplot + common_theme
+p_boxplot <- p_boxplot + common_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # angled x-axis only for boxplot
+
+# Combine
+combined_plot <- p_barplot + p_boxplot +
+  plot_layout(ncol = 2, widths = c(1, 1)) +
+  plot_annotation(tag_levels = "A")
+
+ggsave("Figures_thesis/Figure_Combined_Bar_Box.png", combined_plot, width = 40, height = 17, dpi = 300, bg = "white")
+
+
+#-------- Combine heatmaps ---------
+
+selected_media <- c("Ammonia", "Arginine as N. source")
+heatmaps <- list()
+
+for (media in selected_media) {
+  annotated <- growthdata_annotated_all[[media]]
+  
+  max_per_well <- annotated %>%
+    group_by(well, Media) %>%
+    summarise(max_OD = max(value, na.rm = TRUE), .groups = "drop") %>%
+    mutate(Row = substr(well, 1, 1),
+           Column = as.numeric(sub("^[A-P]", "", well)))
+  
+  p <- ggplot(max_per_well, aes(x = Column, y = Row, fill = max_OD)) +
+    geom_tile(color = "white") +
+    scale_fill_viridis_c(option = "plasma", na.value = "white") +
+    coord_fixed() +
+    scale_y_discrete(limits = rev(LETTERS[1:16])) +
+    theme_minimal(base_size = 18) +
+    labs(title = media, x = "Column", y = "Row", fill = "Max OD600") +
+    theme(
+      plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 16)
+    )
+  
+  heatmaps[[media]] <- p
+}
+
+
+
+combined_heatmap_plot <- heatmaps[[1]] + heatmaps[[2]] +
+  plot_layout(ncol = 2) +
+  plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(face = "bold", size = 20))
+
+ggsave("Figures_thesis/Combined_Heatmaps_SelectedMedia.png",
+       combined_heatmap_plot, width = 42, height = 10, dpi = 300, bg = "white")
+
+print(combined_heatmap_plot)
